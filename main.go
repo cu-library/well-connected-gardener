@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"flag"
@@ -11,12 +12,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"bufio"
-	"syscall"
-	"strconv"
 )
 
 var (
@@ -28,14 +27,13 @@ var (
 
 const YazTemplateISBNUofT string = `open sirsi.library.utoronto.ca:2200
 find @attr 1=7 "%v"
-show 1
-exit
+quit
 `
 
 const YazTemplateISBNUofO string = `open orbis.uottawa.ca:210/INNOPAC
 find @attr 1=7 "%v"
-show 1
-exit
+close
+quit
 `
 
 func init() {
@@ -73,7 +71,7 @@ func process(ctx context.Context, filename string) {
 	dir := filepath.Dir(absPath)
 	ext := filepath.Ext(absPath)
 	base := filepath.Base(absPath)
-	modified := filepath.Join(dir, strings.TrimSuffix(base, ext) + "_augmented" + ext)
+	modified := filepath.Join(dir, strings.TrimSuffix(base, ext)+"_augmented"+ext)
 
 	output, err := os.Create(modified)
 	if err != nil {
@@ -129,7 +127,7 @@ ProcessingLoop:
 			}
 
 			if *v {
-					log.Printf("%#v\n", recordMap)
+				log.Printf("%#v\n", recordMap)
 			}
 
 			foundInUofOCat := false
@@ -257,7 +255,7 @@ func z3950forISBN(isbn string, template string) (bool, error) {
 
 	// The command to execute
 	cmd := exec.Command("yaz-client", "-f", "/dev/stdin")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	//cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
