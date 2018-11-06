@@ -1,7 +1,8 @@
 builds:
-  - goos: 
+  - goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
     env:
