@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -112,7 +114,9 @@ ProcessingLoop:
 		if header == nil {
 			newHeader := append([]string{}, record...)
 			newHeader = append(newHeader, "FOUND IN UOFO CATALOGUE")
+			newHeader = append(newHeader, "UOFO CATALOGUE SEARCH")
 			newHeader = append(newHeader, "FOUND IN UOFT CATALOGUE")
+			newHeader = append(newHeader, "UOFT CATALOGUE SEARCH")
 			o.Write(newHeader)
 
 			lowercaserecord := record[:0]
@@ -131,7 +135,9 @@ ProcessingLoop:
 			}
 
 			foundInUofOCat := false
+			isbnInUofOCat := ""
 			foundInUofTCat := false
+			isbnInUofTCat := ""
 
 			for _, isbn := range getISBNs(recordMap["020|a"]) {
 
@@ -139,28 +145,34 @@ ProcessingLoop:
 					log.Printf("ISBN: %v\n", isbn)
 				}
 
-				uoforesult, err := z3950forISBN(isbn, YazTemplateISBNUofO)
-				if err != nil {
-					log.Println(err)
-					break ProcessingLoop
-				}
-				if uoforesult {
-					foundInUofOCat = true
-				}
-				if *v {
-					log.Printf("UofO Result: %v\n", uoforesult)
+				if !foundInUofOCat {
+					uoforesult, err := z3950forISBN(isbn, YazTemplateISBNUofO)
+					if err != nil {
+						log.Println(err)
+						break ProcessingLoop
+					}
+					if uoforesult {
+						foundInUofOCat = true
+						isbnInUofOCat = isbn
+					}
+					if *v {
+						log.Printf("UofO Result: %v\n", uoforesult)
+					}
 				}
 
-				uoftresult, err := z3950forISBN(isbn, YazTemplateISBNUofT)
-				if err != nil {
-					log.Println(err)
-					break ProcessingLoop
-				}
-				if uoftresult {
-					foundInUofTCat = true
-				}
-				if *v {
-					log.Printf("UofT Result: %v\n", uoftresult)
+				if !foundInUofTCat {
+					uoftresult, err := z3950forISBN(isbn, YazTemplateISBNUofT)
+					if err != nil {
+						log.Println(err)
+						break ProcessingLoop
+					}
+					if uoftresult {
+						foundInUofTCat = true
+						isbnInUofTCat = isbn
+					}
+					if *v {
+						log.Printf("UofT Result: %v\n", uoftresult)
+					}
 				}
 
 				time.Sleep(500 * time.Millisecond)
@@ -168,7 +180,17 @@ ProcessingLoop:
 
 			newRecord := append([]string{}, record...)
 			newRecord = append(newRecord, strconv.FormatBool(foundInUofOCat))
+			if foundInUofOCat {
+				newRecord = append(newRecord, "https://orbis.uottawa.ca/search/?searchtype=i&SORT=D&searcharg="+isbnInUofOCat)
+			} else {
+				newRecord = append(newRecord, "https://orbis.uottawa.ca/search/?searchtype=t&SORT=D&searcharg="+urlReadyTitle(recordMap["title"]))
+			}
 			newRecord = append(newRecord, strconv.FormatBool(foundInUofTCat))
+			if foundInUofTCat {
+				newRecord = append(newRecord, "https://onesearch.library.utoronto.ca/onesearch/"+isbnInUofTCat+"//")
+			} else {
+				newRecord = append(newRecord, "https://onesearch.library.utoronto.ca/onesearch/"+urlReadyTitle(recordMap["title"])+"//title")
+			}
 			o.Write(newRecord)
 		}
 
@@ -253,15 +275,39 @@ func z3950forISBN(isbn string, template string) (bool, error) {
 
 	found := false
 
-	// The command to execute
-	cmd := exec.Command("yaz-client", "-f", "/dev/stdin")
-	//cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	stdin, err := cmd.StdinPipe()
+	// Create command script in temporary directory
+	cmdFile, err := ioutil.TempFile("", "well-connected-gardener-yaz-command.*.txt")
 	if err != nil {
-		log.Println("unable to create new StdinPipe")
+		log.Println("unable to create new temporary command file")
 		return found, err
 	}
+
+	if *v {
+		log.Printf("Created temp command file at %v.\n", cmdFile.Name())
+	}
+
+	defer os.Remove(cmdFile.Name())
+
+	_, err = cmdFile.WriteString(fmt.Sprintf(template, isbn))
+	if err != nil {
+		log.Println("unable to write to temporary command file")
+		return found, err
+	}
+
+	err = cmdFile.Sync()
+	if err != nil {
+		log.Println("unable to call sync on temporary command file")
+		return found, err
+	}
+
+	err = cmdFile.Close()
+	if err != nil {
+		log.Println("unable to close temporary command file")
+		return found, err
+	}
+
+	// The command to execute
+	cmd := exec.Command("yaz-client", "-f", cmdFile.Name())
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -269,12 +315,11 @@ func z3950forISBN(isbn string, template string) (bool, error) {
 		return found, err
 	}
 
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	if err != nil {
 		log.Println("error starting exec'd process")
 		return found, err
 	}
-
-	io.WriteString(stdin, fmt.Sprintf(template, isbn))
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
@@ -286,15 +331,22 @@ func z3950forISBN(isbn string, template string) (bool, error) {
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	err = scanner.Err()
+	if err != nil {
 		log.Println("error scanning from exec'd process")
 		return found, err
 	}
 
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+	if err != nil {
 		log.Println("error waiting for exec'd command to complete")
 		return found, err
 	}
 
 	return found, nil
+}
+
+func urlReadyTitle(title string) string {
+	firstPart := strings.TrimSpace(strings.Split(title, "/")[0])
+	return url.QueryEscape(firstPart)
 }
